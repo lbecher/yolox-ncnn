@@ -86,9 +86,15 @@ Run the inference by sshing into the machine or via `adb shell` dynamically mapp
 adb shell "cd /data/local/tmp && ./yolox_ncnn -w tiny -i image_to_test.jpg -t 4 -o output.jpg"
 ```
 
-To enable **Vulkan Acceleration**, just append the `-v` flag:
+To enable **Vulkan Acceleration**, just append the `-g` or `--gpu` flag:
 ```bash
-adb shell "cd /data/local/tmp && ./yolox_ncnn -w tiny -i image_to_test.jpg -t 4 -v -o output.jpg"
+adb shell "cd /data/local/tmp && ./yolox_ncnn -w tiny -i image_to_test.jpg -t 4 -g -o output.jpg"
+```
+
+To run benchmark/test mode with repeated inferences and save the timings to CSV:
+```bash
+adb shell "cd /data/local/tmp && ./yolox_ncnn -w tiny -i image_to_test.jpg -t 4 -g --test-runs 100 --test-csv results.csv"
+adb pull /data/local/tmp/results.csv ./results.csv
 ```
 
 Then fetch back the drawn outcome image:
@@ -107,7 +113,9 @@ adb pull /data/local/tmp/output.jpg ./output.jpg
 | `-s` | Target scale/size override | No | Preset default, or 640 for manual models |
 | `-t` | Number of threads to use on NCNN | No | 4 |
 | `-o` | Output file name for drawn bounding boxes | No | `output.jpg` |
-| `-v` | Uses Vulcan GPU Hardware acceleration | No | `false` (CPU) |
+| `-g`, `--gpu` | Uses Vulkan GPU hardware acceleration | No | `false` (CPU) |
+| `--test-runs` | Enables test mode and runs N repeated inferences | Required with `--test-csv` | - |
+| `--test-csv` | CSV output path for per-run test results | Required with `--test-runs` | - |
 
 Preset defaults:
 

@@ -2,6 +2,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <getopt.h>
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
@@ -204,8 +206,21 @@ bool resolve_model_files(const ModelPreset& preset, std::string& param_path, std
     return false;
 }
 
+std::string csv_escape(const std::string& value) {
+    std::string escaped = "\"";
+    for (char c : value) {
+        if (c == '"') {
+            escaped += "\"\"";
+        } else {
+            escaped += c;
+        }
+    }
+    escaped += "\"";
+    return escaped;
+}
+
 void print_usage() {
-    std::cout << "Usage: ./yolox_ncnn -i <image_path> [-w <model>] [-p <param_path> -b <bin_path>] [-s <target_size>] [-t <threads>] [-o <output_path>] [-v]\n"
+    std::cout << "Usage: ./yolox_ncnn -i <image_path> [-w <model>] [-p <param_path> -b <bin_path>] [-s <target_size>] [-t <threads>] [-o <output_path>] [-g|--gpu] [--test-runs <n> --test-csv <path>]\n"
               << "Options:\n"
               << "  -i  Path to the input image (required)\n"
               << "  -w  COCO pretrained model preset: nano, tiny, small (aliases: n, t, s)\n"
@@ -214,7 +229,9 @@ void print_usage() {
               << "  -s  Target size override (defaults: nano/tiny=416, small/manual=640)\n"
               << "  -t  Number of threads for ncnn (default: 4)\n"
               << "  -o  Path to save the output image (default: output.jpg)\n"
-              << "  -v  Enable Vulkan GPU compute (default: false)\n"
+              << "  -g, --gpu  Enable Vulkan GPU compute (default: false)\n"
+              << "  --test-runs  Run benchmark/test mode with N repeated inferences\n"
+              << "  --test-csv   Path to save per-run benchmark results as CSV\n"
               << "Environment:\n"
               << "  YOLOX_MODEL_CACHE  Directory used to cache preset model files\n";
 }
@@ -229,9 +246,21 @@ int main(int argc, char** argv) {
     bool target_size_overridden = false;
     int num_threads = 4;
     bool use_vulkan = false;
+    int test_runs = 0;
+    std::string test_csv_path;
+    bool test_runs_set = false;
+    bool test_csv_set = false;
+
+    static const option long_options[] = {
+        {"gpu", no_argument, nullptr, 'g'},
+        {"test-runs", required_argument, nullptr, 1000},
+        {"test-csv", required_argument, nullptr, 1001},
+        {"help", no_argument, nullptr, 'h'},
+        {nullptr, 0, nullptr, 0},
+    };
 
     int opt;
-    while ((opt = getopt(argc, argv, "i:w:p:b:s:t:o:vh")) != -1) {
+    while ((opt = getopt_long(argc, argv, "i:w:p:b:s:t:o:gvh", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'i': image_path = optarg; break;
             case 'w': model_name = optarg; break;
@@ -243,7 +272,16 @@ int main(int argc, char** argv) {
                 break;
             case 't': num_threads = std::stoi(optarg); break;
             case 'o': output_path = optarg; break;
+            case 'g': use_vulkan = true; break;
             case 'v': use_vulkan = true; break;
+            case 1000:
+                test_runs = std::stoi(optarg);
+                test_runs_set = true;
+                break;
+            case 1001:
+                test_csv_path = optarg;
+                test_csv_set = true;
+                break;
             case 'h': 
             default:
                 print_usage();
@@ -280,6 +318,17 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+    if (test_runs_set != test_csv_set) {
+        std::cerr << "Error: Test mode requires both --test-runs <n> and --test-csv <path>.\n";
+        print_usage();
+        return -1;
+    }
+
+    if (test_runs_set && test_runs <= 0) {
+        std::cerr << "Error: --test-runs must be greater than zero.\n";
+        return -1;
+    }
+
     cv::Mat m = cv::imread(image_path, 1);
     if (m.empty()) {
         std::cerr << "Error: cv::imread " << image_path << " failed\n";
@@ -294,6 +343,42 @@ int main(int argc, char** argv) {
     }
 
     std::vector<Object> objects;
+
+    if (test_runs_set) {
+        std::ofstream csv(test_csv_path);
+        if (!csv.is_open()) {
+            std::cerr << "Error: Failed to open CSV output " << test_csv_path << "\n";
+            return -1;
+        }
+
+        csv << "run,elapsed_ms,objects_detected,image_path,param_path,bin_path,target_size,threads,gpu\n";
+        std::cout << "Running test mode with " << test_runs << " repetitions. CSV: " << test_csv_path << "\n";
+
+        for (int run = 1; run <= test_runs; run++) {
+            objects.clear();
+
+            auto start = std::chrono::steady_clock::now();
+            if (detector.detect(m, objects) != 0) {
+                std::cerr << "Error: Detection failed on test run " << run << ".\n";
+                return -1;
+            }
+            auto end = std::chrono::steady_clock::now();
+            double elapsed_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+            csv << run << ','
+                << elapsed_ms << ','
+                << objects.size() << ','
+                << csv_escape(image_path) << ','
+                << csv_escape(param_path) << ','
+                << csv_escape(bin_path) << ','
+                << target_size << ','
+                << num_threads << ','
+                << (use_vulkan ? 1 : 0) << '\n';
+        }
+
+        std::cout << "Test results saved to " << test_csv_path << "\n";
+        return 0;
+    }
 
     // Start measuring time
     auto start = std::chrono::steady_clock::now();

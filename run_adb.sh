@@ -13,6 +13,51 @@ if [ ! -x "$ADB" ]; then
     exit 1
 fi
 
+MODEL=${MODEL:-nano}
+TEST_RUNS=${TEST_RUNS:-20}
+REMOTE_CSV=${REMOTE_CSV:-results_android_cpu.csv}
+LOCAL_CSV=${LOCAL_CSV:-results_android_cpu.csv}
+MODEL_CACHE=${YOLOX_MODEL_CACHE:-$HOME/.cache/yolox-ncnn}
+
+case "$MODEL" in
+    nano|n|yolox-n|yolox-nano)
+        MODEL_PARAM=yoloxN.param
+        MODEL_BIN=yoloxN.bin
+        MODEL_PARAM_URL=https://raw.githubusercontent.com/Qengineering/YoloX-ncnn-Raspberry-Pi-4/main/yoloxN.param
+        MODEL_BIN_URL=https://raw.githubusercontent.com/Qengineering/YoloX-ncnn-Raspberry-Pi-4/main/yoloxN.bin
+        ;;
+    tiny|t|yolox-t|yolox-tiny)
+        MODEL_PARAM=yoloxT.param
+        MODEL_BIN=yoloxT.bin
+        MODEL_PARAM_URL=https://raw.githubusercontent.com/Qengineering/YoloX-ncnn-Raspberry-Pi-4/main/yoloxT.param
+        MODEL_BIN_URL=https://raw.githubusercontent.com/Qengineering/YoloX-ncnn-Raspberry-Pi-4/main/yoloxT.bin
+        ;;
+    small|s|yolox-s|yolox-small)
+        MODEL_PARAM=yoloxS.param
+        MODEL_BIN=yoloxS.bin
+        MODEL_PARAM_URL=https://raw.githubusercontent.com/Qengineering/YoloX-ncnn-Raspberry-Pi-4/main/yoloxS.param
+        MODEL_BIN_URL=https://raw.githubusercontent.com/Qengineering/YoloX-ncnn-Raspberry-Pi-4/main/yoloxS.bin
+        ;;
+    *)
+        echo "Unknown MODEL '$MODEL'. Use nano, tiny, or small."
+        exit 1
+        ;;
+esac
+
+ensure_model_file() {
+    local path="$1"
+    local url="$2"
+
+    if [ -s "$path" ]; then
+        return
+    fi
+
+    mkdir -p "$(dirname "$path")"
+    echo "Downloading $(basename "$path") to $path"
+    curl -fL --retry 3 -o "$path.download" "$url"
+    mv "$path.download" "$path"
+}
+
 ANDROID_NDK=${ANDROID_NDK_HOME:-}
 if [ -z "$ANDROID_NDK" ]; then
     ANDROID_NDK=$(find "$ANDROID_SDK/ndk" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort -r | head -n 1 || true)
@@ -46,14 +91,18 @@ cmake -B build \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 
+ensure_model_file "$MODEL_CACHE/$MODEL_PARAM" "$MODEL_PARAM_URL"
+ensure_model_file "$MODEL_CACHE/$MODEL_BIN" "$MODEL_BIN_URL"
+
 "$ADB" push build/yolox_ncnn /data/local/tmp/
-#"$ADB" push yoloxT.param /data/local/tmp/
-#"$ADB" push yoloxT.bin /data/local/tmp/
+"$ADB" push "$MODEL_CACHE/$MODEL_PARAM" "/data/local/tmp/$MODEL_PARAM"
+"$ADB" push "$MODEL_CACHE/$MODEL_BIN" "/data/local/tmp/$MODEL_BIN"
 #"$ADB" push dog_bike_man.jpg /data/local/tmp/
 
 "$ADB" shell chmod +x /data/local/tmp/yolox_ncnn
 "$ADB" shell 'cd /data/local/tmp &&
     rm -f gpu.log
+    rm -f '"$REMOTE_CSV"'
     GPU_METRIC_DIR=
     GPU_METRICS=
 
@@ -87,7 +136,7 @@ cmake --build build
         GPU_MONITOR_PID=
     fi
 
-    ./yolox_ncnn -w tiny -i dog_bike_man.jpg -t 4 -v -o output.jpg
+    ./yolox_ncnn -w '"$MODEL"' -i dog_bike_man.jpg -t 4 --test-runs '"$TEST_RUNS"' --test-csv '"$REMOTE_CSV"'
     STATUS=$?
 
     if [ -n "$GPU_MONITOR_PID" ]; then
@@ -97,5 +146,5 @@ cmake --build build
 
     exit "$STATUS"'
 
-"$ADB" pull /data/local/tmp/output.jpg ./output.jpg
+"$ADB" pull "/data/local/tmp/$REMOTE_CSV" "./$LOCAL_CSV"
 "$ADB" pull /data/local/tmp/gpu.log ./gpu.log

@@ -148,8 +148,26 @@ elseif(APPLE)
         "${NCNN_DIR}/glslang.framework"
         "${NCNN_DIR}/openmp.framework"
     )
+
+    find_library(YOLOX_VULKAN_FRAMEWORK Vulkan
+        PATHS
+            "$ENV{VULKAN_SDK}/Frameworks"
+            "/opt/homebrew/opt/vulkan-loader/lib"
+            "/usr/local/opt/vulkan-loader/lib"
+            "/Library/Frameworks"
+        NO_DEFAULT_PATH
+    )
+    if(NOT YOLOX_VULKAN_FRAMEWORK)
+        find_library(YOLOX_VULKAN_FRAMEWORK Vulkan)
+    endif()
+    if(NOT YOLOX_VULKAN_FRAMEWORK)
+        message(FATAL_ERROR "ncnn macOS Vulkan requires Vulkan.framework. Install the Vulkan SDK/MoltenVK or set VULKAN_SDK before configuring.")
+    endif()
+    list(APPEND YOLOX_NCNN_LIBRARIES "${YOLOX_VULKAN_FRAMEWORK}")
+
     message(STATUS "Configuring macOS host build for ${CMAKE_SYSTEM_PROCESSOR}")
     message(STATUS "Using bundled ncnn frameworks from ${NCNN_DIR}; OpenCV is resolved from the system or OpenCV_DIR.")
+    message(STATUS "Using Vulkan framework from ${YOLOX_VULKAN_FRAMEWORK}")
 else()
     message(STATUS "Configuring host build for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
     message(STATUS "Host builds use OpenCV and ncnn from the system or CMAKE_PREFIX_PATH.")
