@@ -1,4 +1,6 @@
 /lib
 /build
 .DS_Store
+*.bin
+*.param
 *.log
