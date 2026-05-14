@@ -1,83 +1,175 @@
 cmake_minimum_required(VERSION 3.10)
 project(yolox_ncnn C CXX)
 
+include(CheckCXXCompilerFlag)
+include(CheckIPOSupported)
+
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Adding heavy optimization flags
-# -mcpu=cortex-a55 optimizes instructions and pipelines EXACTLY for Cortex-A55
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Ofast -ffast-math -flto -mcpu=cortex-a55")
-
-# Base directory for libraries
-set(LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
-
-# ---------------------------------------------------------
-# 1. Automatic Download and Extraction of NCNN (Vulkan Version)
-# ---------------------------------------------------------
-set(NCNN_DIR "${LIB_DIR}/ncnn-20260113-android-vulkan")
-set(NCNN_URL "https://github.com/Tencent/ncnn/releases/download/20260113/ncnn-20260113-android-vulkan.zip")
-
-if(NOT EXISTS ${NCNN_DIR})
-    message(STATUS "NCNN Vulkan not found. Downloading from ${NCNN_URL}...")
-    file(DOWNLOAD ${NCNN_URL} "${LIB_DIR}/ncnn-vulkan.zip" SHOW_PROGRESS)
-    
-    message(STATUS "Extracting NCNN Vulkan to lib directory...")
-    execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf "${LIB_DIR}/ncnn-vulkan.zip" WORKING_DIRECTORY ${LIB_DIR})
-    
-    # Clean up the zip file after extraction
-    file(REMOVE "${LIB_DIR}/ncnn-vulkan.zip")
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# ---------------------------------------------------------
-# Automatically download and extract OpenCV
-# ---------------------------------------------------------
-set(OPENCV_DIR "${LIB_DIR}/OpenCV-android-sdk")
-set(OPENCV_URL "https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-android-sdk.zip")
+option(YOLOX_ENABLE_FAST_MATH "Enable aggressive floating-point optimizations" ON)
+option(YOLOX_ENABLE_LTO "Enable link-time optimization when supported" ON)
 
-if(NOT EXISTS ${OPENCV_DIR})
-    message(STATUS "OpenCV not found. Downloading from ${OPENCV_URL}...")
-    file(DOWNLOAD ${OPENCV_URL} "${LIB_DIR}/opencv.zip" SHOW_PROGRESS)
-    
-    message(STATUS "Extracting OpenCV to lib directory...")
-    execute_process(COMMAND ${CMAKE_COMMAND} -E tar xzf "${LIB_DIR}/opencv.zip" WORKING_DIRECTORY ${LIB_DIR})
-    
-    # Cleanup the zip file
-    file(REMOVE "${LIB_DIR}/opencv.zip")
-endif()
+set(LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
+file(MAKE_DIRECTORY "${LIB_DIR}")
 
-# ---------------------------------------------------------
-# Android NDK Configuration
-# ---------------------------------------------------------
-
-# NOTE: NCNN for Android has several folders for ABIs (e.g. arm64-v8a, armeabi-v7a).
-# Getting the ABI of the connected device via ADB if not explicitly set
-if(NOT DEFINED ANDROID_ABI)
-    execute_process(
-        COMMAND adb shell getprop ro.product.cpu.abi
-        OUTPUT_VARIABLE ADB_ABI
-        RESULT_VARIABLE ADB_RESULT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    if(ADB_RESULT EQUAL 0 AND NOT "${ADB_ABI}" STREQUAL "")
-        set(ANDROID_ABI "${ADB_ABI}" CACHE STRING "Target Android ABI")
-        message(STATUS "ANDROID_ABI detected via adb: ${ANDROID_ABI}")
-    else()
-        set(ANDROID_ABI "arm64-v8a" CACHE STRING "Target Android ABI")
-        message(WARNING "ADB did not detect a device or failed. Using default: ${ANDROID_ABI}")
+function(yolox_add_supported_compile_option target option var_name)
+    check_cxx_compiler_flag("${option}" "${var_name}")
+    if(${var_name})
+        target_compile_options(${target} PRIVATE "${option}")
     endif()
+endfunction()
+
+function(yolox_apply_platform_optimizations target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            $<$<CONFIG:Release>:/O2>
+        )
+        return()
+    endif()
+
+    target_compile_options(${target} PRIVATE
+        $<$<CONFIG:Release>:-O3>
+    )
+
+    if(YOLOX_ENABLE_FAST_MATH)
+        yolox_add_supported_compile_option(${target} "-ffast-math" YOLOX_HAS_FFAST_MATH)
+    endif()
+
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" YOLOX_SYSTEM_PROCESSOR)
+
+    if(ANDROID)
+        if(ANDROID_ABI MATCHES "arm64-v8a|armeabi-v7a")
+            yolox_add_supported_compile_option(${target} "-mcpu=cortex-a55" YOLOX_HAS_ANDROID_A55)
+        endif()
+    elseif(APPLE AND YOLOX_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        yolox_add_supported_compile_option(${target} "-mcpu=apple-m1" YOLOX_HAS_APPLE_M1)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND YOLOX_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|armv7|arm")
+        yolox_add_supported_compile_option(${target} "-mcpu=cortex-a55" YOLOX_HAS_LINUX_A55)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND YOLOX_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        yolox_add_supported_compile_option(${target} "-march=x86-64-v3" YOLOX_HAS_X86_64_V3)
+        yolox_add_supported_compile_option(${target} "-mtune=generic" YOLOX_HAS_MTUNE_GENERIC)
+    endif()
+
+    if(YOLOX_ENABLE_LTO)
+        check_ipo_supported(RESULT YOLOX_IPO_SUPPORTED OUTPUT YOLOX_IPO_ERROR)
+        if(YOLOX_IPO_SUPPORTED)
+            set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        else()
+            message(STATUS "IPO/LTO not enabled: ${YOLOX_IPO_ERROR}")
+        endif()
+    endif()
+endfunction()
+
+# ---------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------
+if(ANDROID)
+    set(NCNN_DIR "${LIB_DIR}/ncnn-20260113-android-vulkan")
+    set(NCNN_URL "https://github.com/Tencent/ncnn/releases/download/20260113/ncnn-20260113-android-vulkan.zip")
+
+    if(NOT EXISTS "${NCNN_DIR}")
+        message(STATUS "NCNN Vulkan not found. Downloading from ${NCNN_URL}...")
+        file(DOWNLOAD "${NCNN_URL}" "${LIB_DIR}/ncnn-vulkan.zip" SHOW_PROGRESS)
+
+        message(STATUS "Extracting NCNN Vulkan to lib directory...")
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xzf "${LIB_DIR}/ncnn-vulkan.zip" WORKING_DIRECTORY "${LIB_DIR}")
+        file(REMOVE "${LIB_DIR}/ncnn-vulkan.zip")
+    endif()
+
+    set(OPENCV_DIR "${LIB_DIR}/OpenCV-android-sdk")
+    set(OPENCV_URL "https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-android-sdk.zip")
+
+    if(NOT EXISTS "${OPENCV_DIR}")
+        message(STATUS "OpenCV not found. Downloading from ${OPENCV_URL}...")
+        file(DOWNLOAD "${OPENCV_URL}" "${LIB_DIR}/opencv.zip" SHOW_PROGRESS)
+
+        message(STATUS "Extracting OpenCV to lib directory...")
+        execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xzf "${LIB_DIR}/opencv.zip" WORKING_DIRECTORY "${LIB_DIR}")
+        file(REMOVE "${LIB_DIR}/opencv.zip")
+    endif()
+
+    if(NOT DEFINED ANDROID_ABI)
+        execute_process(
+            COMMAND adb shell getprop ro.product.cpu.abi
+            OUTPUT_VARIABLE ADB_ABI
+            RESULT_VARIABLE ADB_RESULT
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(ADB_RESULT EQUAL 0 AND NOT "${ADB_ABI}" STREQUAL "")
+            set(ANDROID_ABI "${ADB_ABI}" CACHE STRING "Target Android ABI")
+            message(STATUS "ANDROID_ABI detected via adb: ${ANDROID_ABI}")
+        else()
+            set(ANDROID_ABI "arm64-v8a" CACHE STRING "Target Android ABI")
+            message(WARNING "ADB did not detect a device or failed. Using default: ${ANDROID_ABI}")
+        endif()
+    endif()
+
+    set(OpenCV_DIR "${OPENCV_DIR}/sdk/native/jni")
+    set(ncnn_DIR "${NCNN_DIR}/${ANDROID_ABI}/lib/cmake/ncnn")
+elseif(APPLE)
+    set(NCNN_DIR "${LIB_DIR}/ncnn-20260113-macos-vulkan")
+    set(NCNN_URL "https://github.com/Tencent/ncnn/releases/download/20260113/ncnn-20260113-macos-vulkan.zip")
+
+    if(NOT EXISTS "${NCNN_DIR}/ncnn.framework")
+        message(STATUS "NCNN macOS Vulkan not found. Downloading from ${NCNN_URL}...")
+        file(DOWNLOAD "${NCNN_URL}" "${LIB_DIR}/ncnn-macos-vulkan.zip" SHOW_PROGRESS STATUS NCNN_DOWNLOAD_STATUS)
+        list(GET NCNN_DOWNLOAD_STATUS 0 NCNN_DOWNLOAD_RESULT)
+        if(NOT NCNN_DOWNLOAD_RESULT EQUAL 0)
+            list(GET NCNN_DOWNLOAD_STATUS 1 NCNN_DOWNLOAD_ERROR)
+            message(FATAL_ERROR "Failed to download ncnn macOS Vulkan: ${NCNN_DOWNLOAD_ERROR}")
+        endif()
+
+        message(STATUS "Extracting NCNN macOS Vulkan to lib directory...")
+        file(MAKE_DIRECTORY "${NCNN_DIR}")
+        execute_process(
+            COMMAND "${CMAKE_COMMAND}" -E tar xzf "${LIB_DIR}/ncnn-macos-vulkan.zip"
+            WORKING_DIRECTORY "${NCNN_DIR}"
+            RESULT_VARIABLE NCNN_EXTRACT_RESULT
+        )
+        file(REMOVE "${LIB_DIR}/ncnn-macos-vulkan.zip")
+        if(NOT NCNN_EXTRACT_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to extract ncnn macOS Vulkan package.")
+        endif()
+    endif()
+
+    if(NOT EXISTS "${NCNN_DIR}/ncnn.framework")
+        message(FATAL_ERROR "ncnn macOS framework was not found at ${NCNN_DIR}/ncnn.framework")
+    endif()
+
+    set(YOLOX_NCNN_INCLUDE_DIRS "${NCNN_DIR}/ncnn.framework/Headers/ncnn")
+    set(YOLOX_NCNN_LIBRARIES
+        "${NCNN_DIR}/ncnn.framework"
+        "${NCNN_DIR}/glslang.framework"
+        "${NCNN_DIR}/openmp.framework"
+    )
+    message(STATUS "Configuring macOS host build for ${CMAKE_SYSTEM_PROCESSOR}")
+    message(STATUS "Using bundled ncnn frameworks from ${NCNN_DIR}; OpenCV is resolved from the system or OpenCV_DIR.")
+else()
+    message(STATUS "Configuring host build for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
+    message(STATUS "Host builds use OpenCV and ncnn from the system or CMAKE_PREFIX_PATH.")
 endif()
 
-# OpenCV Configuration (using cmake directory from Android native SDK)
-set(OpenCV_DIR "${OPENCV_DIR}/sdk/native/jni")
 find_package(OpenCV REQUIRED)
+if(NOT APPLE)
+    find_package(ncnn REQUIRED)
+    set(YOLOX_NCNN_LIBRARIES ncnn)
+endif()
 
-# NCNN Configuration
-set(ncnn_DIR "${NCNN_DIR}/${ANDROID_ABI}/lib/cmake/ncnn")
-find_package(ncnn REQUIRED)
-
-# Add the executable
 file(GLOB SRC_FILES "src/*.cpp")
 add_executable(yolox_ncnn ${SRC_FILES})
 
-# Link dependencies (ncnn handles OpenMP and Vulkan internally in targets exported by CMake)
-target_link_libraries(yolox_ncnn ncnn ${OpenCV_LIBS})
+if(YOLOX_NCNN_INCLUDE_DIRS)
+    target_include_directories(yolox_ncnn PRIVATE ${YOLOX_NCNN_INCLUDE_DIRS})
+endif()
 
+target_link_libraries(yolox_ncnn PRIVATE ${YOLOX_NCNN_LIBRARIES} ${OpenCV_LIBS})
+if(APPLE)
+    set_property(TARGET yolox_ncnn APPEND PROPERTY BUILD_RPATH "${NCNN_DIR}")
+endif()
+yolox_apply_platform_optimizations(yolox_ncnn)
