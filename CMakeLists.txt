@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.11)
 project(yolox_ncnn C CXX)
 
 include(CheckCXXCompilerFlag)
@@ -14,6 +14,9 @@ endif()
 
 option(YOLOX_ENABLE_FAST_MATH "Enable aggressive floating-point optimizations" ON)
 option(YOLOX_ENABLE_LTO "Enable link-time optimization when supported" ON)
+option(YOLOX_FETCH_NCNN "Download and build ncnn from source when it is not installed on Linux hosts" ON)
+option(YOLOX_FETCH_NCNN_VULKAN "Enable Vulkan for the fetched Linux ncnn build" OFF)
+set(YOLOX_FETCH_NCNN_TAG "20260113" CACHE STRING "ncnn Git tag to fetch for Linux host builds")
 
 set(LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
 file(MAKE_DIRECTORY "${LIB_DIR}")
@@ -168,13 +171,57 @@ elseif(APPLE)
     message(STATUS "Configuring macOS host build for ${CMAKE_SYSTEM_PROCESSOR}")
     message(STATUS "Using bundled ncnn frameworks from ${NCNN_DIR}; OpenCV is resolved from the system or OpenCV_DIR.")
     message(STATUS "Using Vulkan framework from ${YOLOX_VULKAN_FRAMEWORK}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(NCNN_DIR "${LIB_DIR}/ncnn-${YOLOX_FETCH_NCNN_TAG}-linux-source")
+
+    message(STATUS "Configuring Linux host build for ${CMAKE_SYSTEM_PROCESSOR}")
+    message(STATUS "Host builds use OpenCV from the system or OpenCV_DIR.")
+
+    if(NOT YOLOX_FETCH_NCNN_VULKAN)
+        find_package(ncnn QUIET)
+    endif()
+
+    if(ncnn_FOUND)
+        message(STATUS "Using system ncnn package.")
+    elseif(YOLOX_FETCH_NCNN)
+        if(YOLOX_FETCH_NCNN_VULKAN)
+            message(STATUS "Building fetched Linux ncnn with Vulkan enabled.")
+        endif()
+        message(STATUS "ncnn package not found. Downloading ncnn ${YOLOX_FETCH_NCNN_TAG} source to ${NCNN_DIR}...")
+        include(FetchContent)
+
+        set(NCNN_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(NCNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+        set(NCNN_BUILD_QUIRC OFF CACHE BOOL "" FORCE)
+        set(NCNN_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(NCNN_VULKAN ${YOLOX_FETCH_NCNN_VULKAN} CACHE BOOL "" FORCE)
+
+        FetchContent_Declare(
+            ncnn
+            GIT_REPOSITORY https://github.com/Tencent/ncnn.git
+            GIT_TAG ${YOLOX_FETCH_NCNN_TAG}
+            GIT_SHALLOW TRUE
+            SOURCE_DIR "${NCNN_DIR}"
+            BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/ncnn-build"
+        )
+        FetchContent_MakeAvailable(ncnn)
+    else()
+        message(FATAL_ERROR "ncnn package not found. Install ncnn, set ncnn_DIR/CMAKE_PREFIX_PATH, or enable YOLOX_FETCH_NCNN.")
+    endif()
+
+    set(YOLOX_NCNN_LIBRARIES ncnn)
 else()
     message(STATUS "Configuring host build for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
     message(STATUS "Host builds use OpenCV and ncnn from the system or CMAKE_PREFIX_PATH.")
 endif()
 
 find_package(OpenCV REQUIRED)
-if(NOT APPLE)
+if(ANDROID)
+    find_package(ncnn REQUIRED)
+    set(YOLOX_NCNN_LIBRARIES ncnn)
+elseif(NOT APPLE AND NOT YOLOX_NCNN_LIBRARIES)
     find_package(ncnn REQUIRED)
     set(YOLOX_NCNN_LIBRARIES ncnn)
 endif()

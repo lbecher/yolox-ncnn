@@ -54,7 +54,7 @@ cmake --build build-macos
 
 ### Linux ARM / Linux amd64
 
-Install OpenCV and ncnn for the host system, then build normally:
+Install OpenCV for the host system, then build normally. If ncnn is not installed, CMake downloads and builds a minimal CPU ncnn from source automatically:
 
 ```bash
 cmake -B build-linux -DCMAKE_BUILD_TYPE=Release
@@ -62,6 +62,22 @@ cmake --build build-linux
 ```
 
 For non-standard dependency locations, pass `-DCMAKE_PREFIX_PATH=/path/to/opencv;/path/to/ncnn` or set `OpenCV_DIR` and `ncnn_DIR` explicitly. On macOS, `ncnn_DIR` is set automatically to the downloaded package unless you override it before configure.
+
+To force Linux to use an already installed ncnn package and fail if it is missing:
+
+```bash
+cmake -B build-linux -DCMAKE_BUILD_TYPE=Release -DYOLOX_FETCH_NCNN=OFF
+```
+
+To build the fetched Linux ncnn with Vulkan support:
+
+```bash
+sudo apt install -y libvulkan-dev vulkan-tools mesa-vulkan-drivers
+cmake -B build-linux-vulkan -DCMAKE_BUILD_TYPE=Release -DYOLOX_FETCH_NCNN_VULKAN=ON
+cmake --build build-linux-vulkan
+```
+
+Then run with `-g` or `--gpu` to use Vulkan at runtime.
 
 ------------
 
