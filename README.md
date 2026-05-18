@@ -6,7 +6,7 @@ This codebase is heavily inspired by and based on the work from [Qengineering/Yo
 - Seamless C++ structure splitting context gracefully (headers and implementation decoupling).
 - POSIX-style Command Line Interface (CLI) parameters using `getopt` (no need to hardcode paths or configs anymore).
 - Auto-download and setup of NCNN for Android/macOS and OpenCV for Android builds.
-- Hardware-specific compiling for Android/Linux ARM (`cortex-a55`), macOS Apple Silicon (`apple-m1`), and Linux amd64 (`x86-64-v3` when supported).
+- Hardware-specific compiling for Android ARM (`cortex-a55`), optional Linux ARM `-mcpu` tuning, macOS Apple Silicon (`apple-m1`), and Linux amd64 (`x86-64-v3` when supported).
 - Fast math and Link Time Optimization (LTO) via GCC/Clang flags for max inference speed.
 - Support for optional **Vulkan** GPU acceleration.
 
@@ -78,6 +78,14 @@ cmake --build build-linux-vulkan
 ```
 
 Then run with `-g` or `--gpu` to use Vulkan at runtime.
+
+Linux ARM builds are portable by default. To tune for the exact CPU of the machine doing the build, add:
+
+```bash
+cmake -B build-linux -DCMAKE_BUILD_TYPE=Release \
+  -DYOLOX_ENABLE_LINUX_ARM_MCPU=ON \
+  -DYOLOX_LINUX_ARM_MCPU=native
+```
 
 ------------
 
