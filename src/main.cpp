@@ -1,4 +1,5 @@
 #include "yolox.hpp"
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 #include <opencv2/highgui/highgui.hpp>
@@ -206,6 +208,28 @@ bool resolve_model_files(const ModelPreset& preset, std::string& param_path, std
     return false;
 }
 
+static int cpu_core_count() {
+    int n = 0;
+    while (true) {
+        std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(n) + "/cpufreq/scaling_cur_freq";
+        FILE* f = std::fopen(path.c_str(), "r");
+        if (!f) break;
+        std::fclose(f);
+        ++n;
+    }
+    return n;
+}
+
+static long read_cpu_freq_khz(int cpu) {
+    std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpufreq/scaling_cur_freq";
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return -1;
+    long freq = -1;
+    std::fscanf(f, "%ld", &freq);
+    std::fclose(f);
+    return freq;
+}
+
 std::string csv_escape(const std::string& value) {
     std::string escaped = "\"";
     for (char c : value) {
@@ -220,7 +244,7 @@ std::string csv_escape(const std::string& value) {
 }
 
 void print_usage() {
-    std::cout << "Usage: ./yolox_ncnn -i <image_path> [-w <model>] [-p <param_path> -b <bin_path>] [-s <target_size>] [-t <threads>] [-o <output_path>] [-g|--gpu] [--test-runs <n> --test-csv <path>]\n"
+    std::cout << "Usage: ./yolox_ncnn -i <image_path> [-w <model>] [-p <param_path> -b <bin_path>] [-s <target_size>] [-t <threads>] [-o <output_path>] [-g|--gpu] [--test-runs <n> --test-csv <path>] [--clock-csv <path>]\n"
               << "Options:\n"
               << "  -i  Path to the input image (required)\n"
               << "  -w  COCO pretrained model preset: nano, tiny, small (aliases: n, t, s)\n"
@@ -232,6 +256,9 @@ void print_usage() {
               << "  -g, --gpu  Enable Vulkan GPU compute (default: false)\n"
               << "  --test-runs  Run benchmark/test mode with N repeated inferences\n"
               << "  --test-csv   Path to save per-run benchmark results as CSV\n"
+              << "  --clock-csv  Path to save CPU core clock samples (sampled every 50 ms during test-runs)\n"
+              << "               CSV columns: timestamp_ms, run, cpu0_khz, cpu1_khz, ...\n"
+              << "               Requires --test-runs.\n"
               << "Environment:\n"
               << "  YOLOX_MODEL_CACHE  Directory used to cache preset model files\n";
 }
@@ -248,13 +275,16 @@ int main(int argc, char** argv) {
     bool use_vulkan = false;
     int test_runs = 0;
     std::string test_csv_path;
+    std::string clock_csv_path;
     bool test_runs_set = false;
     bool test_csv_set = false;
+    bool clock_csv_set = false;
 
     static const option long_options[] = {
         {"gpu", no_argument, nullptr, 'g'},
         {"test-runs", required_argument, nullptr, 1000},
         {"test-csv", required_argument, nullptr, 1001},
+        {"clock-csv", required_argument, nullptr, 1002},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0},
     };
@@ -282,7 +312,11 @@ int main(int argc, char** argv) {
                 test_csv_path = optarg;
                 test_csv_set = true;
                 break;
-            case 'h': 
+            case 1002:
+                clock_csv_path = optarg;
+                clock_csv_set = true;
+                break;
+            case 'h':
             default:
                 print_usage();
                 return -1;
@@ -324,6 +358,12 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+    if (clock_csv_set && !test_runs_set) {
+        std::cerr << "Error: --clock-csv requires --test-runs.\n";
+        print_usage();
+        return -1;
+    }
+
     if (test_runs_set && test_runs <= 0) {
         std::cerr << "Error: --test-runs must be greater than zero.\n";
         return -1;
@@ -354,11 +394,53 @@ int main(int argc, char** argv) {
         csv << "run,elapsed_ms,objects_detected,image_path,param_path,bin_path,target_size,threads,gpu\n";
         std::cout << "Running test mode with " << test_runs << " repetitions. CSV: " << test_csv_path << "\n";
 
+        std::atomic<int> current_run{0};
+        std::atomic<bool> sampling_active{false};
+        std::thread clock_thread;
+
+        if (clock_csv_set) {
+            std::ofstream clock_csv(clock_csv_path);
+            if (!clock_csv.is_open()) {
+                std::cerr << "Error: Failed to open clock CSV output " << clock_csv_path << "\n";
+                return -1;
+            }
+
+            const int cpu_count = cpu_core_count();
+            clock_csv << "timestamp_ms,run";
+            for (int c = 0; c < cpu_count; ++c) {
+                clock_csv << ",cpu" << c << "_khz";
+            }
+            clock_csv << '\n';
+
+            std::cout << "Sampling " << cpu_count << " CPU core(s) clock to " << clock_csv_path << "\n";
+
+            sampling_active.store(true);
+            auto epoch = std::chrono::steady_clock::now();
+
+            clock_thread = std::thread([&, cpu_count, epoch]() mutable {
+                while (sampling_active.load(std::memory_order_relaxed)) {
+                    auto now = std::chrono::steady_clock::now();
+                    long long ts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - epoch).count();
+                    int run = current_run.load(std::memory_order_relaxed);
+
+                    clock_csv << ts_ms << ',' << run;
+                    for (int c = 0; c < cpu_count; ++c) {
+                        clock_csv << ',' << read_cpu_freq_khz(c);
+                    }
+                    clock_csv << '\n';
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+            });
+        }
+
         for (int run = 1; run <= test_runs; run++) {
+            current_run.store(run, std::memory_order_relaxed);
             objects.clear();
 
             auto start = std::chrono::steady_clock::now();
             if (detector.detect(m, objects) != 0) {
+                sampling_active.store(false);
+                if (clock_thread.joinable()) clock_thread.join();
                 std::cerr << "Error: Detection failed on test run " << run << ".\n";
                 return -1;
             }
@@ -376,7 +458,13 @@ int main(int argc, char** argv) {
                 << (use_vulkan ? 1 : 0) << '\n';
         }
 
+        sampling_active.store(false);
+        if (clock_thread.joinable()) clock_thread.join();
+
         std::cout << "Test results saved to " << test_csv_path << "\n";
+        if (clock_csv_set) {
+            std::cout << "Clock samples saved to " << clock_csv_path << "\n";
+        }
         return 0;
     }
 

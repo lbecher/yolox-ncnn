@@ -17,6 +17,7 @@ MODEL=${MODEL:-nano}
 TEST_RUNS=${TEST_RUNS:-20}
 REMOTE_CSV=${REMOTE_CSV:-results_android_cpu.csv}
 LOCAL_CSV=${LOCAL_CSV:-results_android_cpu.csv}
+CLOCK_CSV=${CLOCK_CSV:-}
 MODEL_CACHE=${YOLOX_MODEL_CACHE:-$HOME/.cache/yolox-ncnn}
 
 case "$MODEL" in
@@ -136,7 +137,7 @@ ensure_model_file "$MODEL_CACHE/$MODEL_BIN" "$MODEL_BIN_URL"
         GPU_MONITOR_PID=
     fi
 
-    ./yolox_ncnn -w '"$MODEL"' -i dog_bike_man.jpg -t 4 --test-runs '"$TEST_RUNS"' --test-csv '"$REMOTE_CSV"'
+    ./yolox_ncnn -w '"$MODEL"' -i dog_bike_man.jpg -t 1 --test-runs '"$TEST_RUNS"' --test-csv '"$REMOTE_CSV"' '"${CLOCK_CSV:+--clock-csv $CLOCK_CSV}"'
     STATUS=$?
 
     if [ -n "$GPU_MONITOR_PID" ]; then
@@ -148,3 +149,6 @@ ensure_model_file "$MODEL_CACHE/$MODEL_BIN" "$MODEL_BIN_URL"
 
 "$ADB" pull "/data/local/tmp/$REMOTE_CSV" "./$LOCAL_CSV"
 "$ADB" pull /data/local/tmp/gpu.log ./gpu.log
+if [ -n "$CLOCK_CSV" ]; then
+    "$ADB" pull "/data/local/tmp/$CLOCK_CSV" "./$CLOCK_CSV"
+fi
