@@ -397,9 +397,10 @@ int main(int argc, char** argv) {
         std::atomic<int> current_run{0};
         std::atomic<bool> sampling_active{false};
         std::thread clock_thread;
+        std::ofstream clock_csv;
 
         if (clock_csv_set) {
-            std::ofstream clock_csv(clock_csv_path);
+            clock_csv.open(clock_csv_path);
             if (!clock_csv.is_open()) {
                 std::cerr << "Error: Failed to open clock CSV output " << clock_csv_path << "\n";
                 return -1;
