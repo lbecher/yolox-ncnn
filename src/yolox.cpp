@@ -1,6 +1,7 @@
 #include "yolox.hpp"
 
 #include "layer.h"
+#include <algorithm>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <stdio.h>
@@ -80,37 +81,6 @@ static inline float intersection_area(const Object& a, const Object& b)
     return inter.area();
 }
 
-static void qsort_descent_inplace(std::vector<Object>& faceobjects, int left, int right)
-{
-    int i = left;
-    int j = right;
-    float p = faceobjects[(left + right) / 2].prob;
-
-    while (i <= j)
-    {
-        while (faceobjects[i].prob > p) i++;
-        while (faceobjects[j].prob < p) j--;
-
-        if (i <= j)
-        {
-            std::swap(faceobjects[i], faceobjects[j]);
-            i++;
-            j--;
-        }
-    }
-
-    #pragma omp parallel sections
-    {
-        #pragma omp section
-        {
-            if (left < j) qsort_descent_inplace(faceobjects, left, j);
-        }
-        #pragma omp section
-        {
-            if (i < right) qsort_descent_inplace(faceobjects, i, right);
-        }
-    }
-}
 
 static void nms_sorted_bboxes(const std::vector<Object>& faceobjects, std::vector<int>& picked, float nms_threshold)
 {
@@ -260,7 +230,9 @@ int YoloX::detect(const cv::Mat& bgr, std::vector<Object>& objects)
 
     if (proposals.empty()) return 0;
 
-    qsort_descent_inplace(proposals, 0, proposals.size() - 1);
+    std::sort(proposals.begin(), proposals.end(), [](const Object& a, const Object& b) {
+        return a.prob > b.prob;
+    });
 
     std::vector<int> picked;
     nms_sorted_bboxes(proposals, picked, nms_threshold_);
